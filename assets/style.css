@@ -1,0 +1,189 @@
+/* =====================================================================
+   style.css — tema "Ivory & Teal" untuk aplikasi Optimasi Rute
+   Font judul : Fraunces (serif lembut, elegan)
+   Font isi   : Plus Jakarta Sans (modern, jelas terbaca)
+   Bila internet mati, otomatis jatuh ke Georgia / font sistem.
+   ===================================================================== */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  --ink: #1B2430;
+  --muted: #5B6675;
+  --line: #E6E0D6;
+  --paper: #FBF9F5;
+  --sand: #F3EEE6;
+  --card: #FFFFFF;
+  --teal: #0F766E;
+  --teal-dark: #0B5A54;
+  --teal-soft: #E3F1EE;
+  --amber: #C8862B;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(27, 36, 48, .05), 0 6px 18px rgba(27, 36, 48, .05);
+  --font-body: 'Plus Jakarta Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-head: 'Fraunces', Georgia, 'Times New Roman', serif;
+}
+
+/* ---------- dasar ---------- */
+html, body, .stApp {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background: var(--paper);
+}
+.stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea,
+.stApp button, .stApp select, .stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stMarkdownContainer"] {
+  font-family: var(--font-body);
+}
+.stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+  font-family: var(--font-head);
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  font-weight: 600;
+}
+.stApp h2 { font-size: 1.55rem; }
+.stApp h3 { font-size: 1.25rem; }
+.stApp h4 { font-size: 1.05rem; }
+
+[data-testid="stMainBlockContainer"], .block-container {
+  padding-top: 2rem;
+  padding-bottom: 4rem;
+  max-width: 1280px;
+}
+[data-testid="stHeader"] { background: transparent; }
+footer { visibility: hidden; }
+hr { border-color: var(--line) !important; }
+
+/* ---------- hero ---------- */
+.hero {
+  background: linear-gradient(135deg, #0B5A54 0%, #0F766E 58%, #218C7E 100%);
+  color: #fff;
+  border-radius: 22px;
+  padding: 2.1rem 2.4rem 1.9rem;
+  margin: 0 0 1.6rem;
+  box-shadow: 0 10px 30px rgba(11, 90, 84, .22);
+  position: relative;
+  overflow: hidden;
+}
+.hero::after {
+  content: "";
+  position: absolute; right: -60px; top: -60px;
+  width: 240px; height: 240px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(200,134,43,.35), rgba(200,134,43,0) 70%);
+}
+.hero .eyebrow {
+  font-size: .72rem; font-weight: 700; letter-spacing: .18em;
+  text-transform: uppercase; color: #F2C98A; margin-bottom: .5rem;
+}
+.hero h1 {
+  font-family: var(--font-head) !important;
+  color: #fff !important;
+  font-size: 2.35rem !important;
+  line-height: 1.15; margin: 0 0 .6rem !important; padding: 0 !important;
+}
+.hero p {
+  color: rgba(255,255,255,.86) !important;
+  max-width: 720px; font-size: 1rem; line-height: 1.6; margin: 0 0 1.1rem;
+}
+.hero .chips span {
+  display: inline-block; margin: 0 .45rem .4rem 0;
+  padding: .28rem .8rem; border-radius: 999px;
+  font-size: .78rem; font-weight: 600; color: #fff;
+  background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.25);
+}
+
+/* ---------- sidebar ---------- */
+[data-testid="stSidebar"] {
+  background: var(--sand);
+  border-right: 1px solid var(--line);
+}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+  font-family: var(--font-head);
+}
+[data-testid="stSidebar"] h1 { font-size: 1.5rem; }
+[data-testid="stSidebar"] h3 {
+  font-size: 1.05rem; margin-top: 1.2rem;
+  padding-bottom: .35rem; border-bottom: 1px solid var(--line);
+}
+
+/* ---------- tab ---------- */
+[data-baseweb="tab-list"] { gap: .35rem; border-bottom: 1px solid var(--line); }
+button[data-baseweb="tab"] {
+  font-family: var(--font-body); font-weight: 600; font-size: .92rem;
+  color: var(--muted); padding: .7rem 1rem; border-radius: 10px 10px 0 0;
+}
+button[data-baseweb="tab"][aria-selected="true"] { color: var(--teal-dark); }
+button[data-baseweb="tab"]:hover { background: var(--teal-soft); color: var(--teal-dark); }
+[data-baseweb="tab-highlight"] { background-color: var(--teal) !important; height: 3px; }
+
+/* ---------- kartu metrik ---------- */
+[data-testid="stMetric"] {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  box-shadow: var(--shadow);
+  border-top: 3px solid var(--teal);
+}
+[data-testid="stMetricLabel"] {
+  color: var(--muted); text-transform: uppercase;
+  letter-spacing: .06em; font-size: .72rem; font-weight: 700;
+}
+[data-testid="stMetricValue"] {
+  font-family: var(--font-head); font-weight: 600;
+  font-size: 1.75rem; color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* ---------- tombol ---------- */
+.stButton > button, .stDownloadButton > button {
+  font-family: var(--font-body); font-weight: 600;
+  border-radius: 11px; border: 1px solid var(--line);
+  background: var(--card); color: var(--ink);
+  padding: .5rem 1.1rem; transition: all .15s ease;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+  border-color: var(--teal); color: var(--teal-dark);
+  box-shadow: 0 2px 10px rgba(15,118,110,.12);
+}
+button[kind="primary"], button[data-testid="stBaseButton-primary"] {
+  background: linear-gradient(135deg, var(--teal-dark), var(--teal)) !important;
+  color: #fff !important; border: none !important;
+  box-shadow: 0 4px 14px rgba(15,118,110,.30);
+}
+button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
+  filter: brightness(1.06); color: #fff !important;
+}
+
+/* ---------- input & unggah ---------- */
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="textarea"] {
+  border-radius: 10px !important; border-color: var(--line) !important;
+  background: var(--card) !important;
+}
+[data-testid="stFileUploaderDropzone"] {
+  background: var(--card); border: 1.5px dashed #9CC7C1; border-radius: var(--radius);
+}
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--teal); background: var(--teal-soft); }
+
+/* ---------- tabel, expander, alert, chat ---------- */
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+[data-testid="stExpander"] {
+  background: var(--card); border: 1px solid var(--line) !important;
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+[data-testid="stExpander"] summary { font-weight: 600; }
+[data-testid="stAlert"] { border-radius: 12px; border: 1px solid var(--line); }
+[data-testid="stChatMessage"] {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: .8rem 1rem;
+}
+[data-testid="stCaptionContainer"] { color: var(--muted); }
+
+/* ---------- ponsel ---------- */
+@media (max-width: 768px) {
+  .hero { padding: 1.4rem 1.2rem; border-radius: 16px; }
+  .hero h1 { font-size: 1.7rem !important; }
+  button[data-baseweb="tab"] { padding: .55rem .6rem; font-size: .82rem; }
+}
