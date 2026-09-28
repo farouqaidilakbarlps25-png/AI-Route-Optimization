@@ -13,7 +13,8 @@ Prinsip desain (penting untuk modul pembelajaran):
       3. bantu_perbaiki_data()   -> menjelaskan & memperbaiki error validasi data
       4. jelaskan_konsep()       -> tutor algoritma memakai KODE ASLI project
          (+ buat_pertanyaan_latihan() dan nilai_jawaban() untuk uji pemahaman)
-  * API key dibaca dari file .env (GEMINI_API_KEY), tidak pernah ditulis di kode.
+  * API key dibaca dari file .env (AI_API_KEY), tidak pernah ditulis di kode. Nama lama
+    GEMINI_API_KEY / GOOGLE_API_KEY tetap didukung agar konfigurasi lama tidak rusak.
   * Alamat pelanggan TIDAK dikirim ke Gemini (hanya ID, nama, dan angka operasional).
 
 Uji cepat tanpa Streamlit:
@@ -24,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -37,8 +39,8 @@ from .kpi_analysis import temuan_otomatis
 # .env berada di root project (satu tingkat di atas folder src)
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-# Nama model bisa diganti lewat .env tanpa mengubah kode: GEMINI_MODEL=...
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+# Nama model bisa diganti lewat .env tanpa mengubah kode: AI_MODEL=...
+MODEL = os.getenv("AI_MODEL") or os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 class AIError(RuntimeError):
@@ -48,39 +50,62 @@ class AIError(RuntimeError):
 # ==================================================================
 # KLIEN & PEMANGGILAN API
 # ==================================================================
-_client = None
+_clients: dict[str, genai.Client] = {}   # satu klien per API key
+_lokal = threading.local()                # key yang ditempel pengguna, khusus sesi/eksekusi ini
+
+
+def atur_kunci_sesi(kunci: str | None) -> None:
+    """Dipanggil app.py di awal setiap rerun dengan key milik SESI pengguna.
+
+    Sengaja tidak memakai os.environ: pada aplikasi yang di-deploy, environment dipakai
+    bersama oleh semua pengunjung, sehingga key satu orang bisa terpakai orang lain.
+    """
+    _lokal.kunci = kunci
+
+
+def _bersihkan(kunci: str | None) -> str | None:
+    """Membuang spasi, baris baru, dan tanda kutip yang sering ikut tertempel."""
+    return kunci.strip().strip("\"'").strip() if kunci else None
 
 
 def _api_key() -> str | None:
-    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    # AI_API_KEY adalah nama utama. GEMINI_API_KEY / GOOGLE_API_KEY tetap dibaca sebagai
+    # fallback, jadi konfigurasi .env atau Secrets versi lama tidak langsung berhenti bekerja.
+    kunci = (getattr(_lokal, "kunci", None) or os.getenv("AI_API_KEY")
+             or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    return _bersihkan(kunci) or None
 
 
 def api_key_tersedia() -> bool:
     return bool(_api_key())
 
 
-def set_api_key(key: str) -> None:
-    """Dipakai kolom input di sidebar bila .env belum diisi (hanya untuk sesi ini)."""
-    global _client
-    os.environ["GEMINI_API_KEY"] = key.strip()
-    _client = None
+def ringkas_kunci() -> str:
+    """Ciri key yang sedang dipakai (aman ditampilkan): 4 karakter terakhir dan panjangnya."""
+    k = _api_key()
+    return f"berakhiran ...{k[-4:]} ({len(k)} karakter)" if k else "belum ada"
 
 
 def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        if not api_key_tersedia():
-            raise AIError("GEMINI_API_KEY belum diatur. Isi file .env atau masukkan lewat sidebar.")
-        _client = genai.Client(api_key=_api_key())
-    return _client
+    kunci = _api_key()
+    if not kunci:
+        raise AIError("AI_API_KEY belum diatur. Isi file .env / Secrets, atau masukkan lewat sidebar.")
+    if kunci not in _clients:
+        _clients[kunci] = genai.Client(api_key=kunci)
+    return _clients[kunci]
+
+
+def tes_koneksi() -> str:
+    """Panggilan terkecil untuk memastikan key dan model valid."""
+    return _panggil("Balas satu kata saja: siap", "Anda asisten singkat.", 0.0, percobaan=1)
 
 
 def _pesan_ramah(kode: int | None) -> str:
     peta = {
-        400: "Permintaan ditolak Gemini (400). Periksa nama model di GEMINI_MODEL dan format API key.",
-        401: "API key tidak valid. Periksa GEMINI_API_KEY.",
+        400: "Permintaan ditolak (400). Periksa nama model di AI_MODEL dan format API key.",
+        401: "API key tidak valid. Periksa AI_API_KEY.",
         403: "API key tidak punya akses ke model ini, atau layanan belum diaktifkan untuk akun Anda.",
-        404: f"Model '{MODEL}' tidak ditemukan. Ganti GEMINI_MODEL di file .env.",
+        404: f"Model '{MODEL}' tidak ditemukan. Ganti AI_MODEL di file .env.",
         429: "Kuota atau batas permintaan Gemini terlampaui. Tunggu sekitar satu menit lalu coba lagi.",
     }
     if kode in peta:

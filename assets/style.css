@@ -13,10 +13,10 @@
   --paper: #FBF9F5;
   --sand: #F3EEE6;
   --card: #FFFFFF;
-  --teal: #0F766E;
-  --teal-dark: #0B5A54;
+  --teal: #0051ff;
+  --teal-dark: #006eff;
   --teal-soft: #E3F1EE;
-  --amber: #C8862B;
+  --amber: #74b7ee;
   --radius: 14px;
   --shadow: 0 1px 2px rgba(27, 36, 48, .05), 0 6px 18px rgba(27, 36, 48, .05);
   --font-body: 'Plus Jakarta Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -186,4 +186,62 @@ button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
   .hero { padding: 1.4rem 1.2rem; border-radius: 16px; }
   .hero h1 { font-size: 1.7rem !important; }
   button[data-baseweb="tab"] { padding: .55rem .6rem; font-size: .82rem; }
+}
+
+/* =====================================================================
+   Efek hover tambahan — memperjelas elemen yang bisa diklik/diinteraksi
+   ===================================================================== */
+[data-testid="stMetric"] {
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+[data-testid="stMetric"]:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, .14);
+  border-color: #9CC7C1;
+}
+
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+  transition: box-shadow .18s ease, border-color .18s ease;
+}
+[data-testid="stDataFrame"]:hover, [data-testid="stDataEditor"]:hover {
+  box-shadow: 0 10px 24px rgba(27, 36, 48, .10);
+  border-color: #9CC7C1;
+}
+
+[data-testid="stExpander"] {
+  transition: box-shadow .18s ease, border-color .18s ease;
+}
+[data-testid="stExpander"]:hover {
+  box-shadow: 0 10px 24px rgba(27, 36, 48, .10);
+  border-color: #9CC7C1;
+}
+
+button[data-baseweb="tab"] { transition: color .15s ease, background-color .15s ease; }
+
+.hero .chips span { transition: background-color .15s ease, transform .15s ease; }
+.hero .chips span:hover {
+  background: rgba(255,255,255,.26);
+  transform: translateY(-1px);
+}
+
+[data-testid="stFileUploaderDropzone"] { transition: border-color .18s ease, background-color .18s ease; }
+
+[data-testid="stChatMessage"] { transition: box-shadow .18s ease; }
+[data-testid="stChatMessage"]:hover { box-shadow: 0 8px 20px rgba(27, 36, 48, .08); }
+
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="textarea"] {
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+[data-baseweb="input"]:hover, [data-baseweb="select"] > div:hover, [data-baseweb="textarea"]:hover {
+  border-color: #9CC7C1 !important;
+}
+
+a { transition: color .15s ease; }
+a:hover { color: var(--teal-dark) !important; }
+
+[data-testid="stSidebar"] [data-testid="stAlert"] {
+  transition: box-shadow .18s ease;
+}
+[data-testid="stSidebar"] [data-testid="stAlert"]:hover {
+  box-shadow: 0 6px 16px rgba(27, 36, 48, .08);
 }

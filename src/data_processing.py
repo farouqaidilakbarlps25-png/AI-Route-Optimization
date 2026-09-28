@@ -65,6 +65,11 @@ STATUS_TIDAK_SIAP = {"unavailable", "not available", "maintenance", "under maint
                      "perawatan", "rusak", "inactive", "nonaktif", "tidak tersedia", "broken"}
 
 
+class FileUploadError(ValueError):
+    """Kesalahan validasi file unggahan yang pesannya aman ditampilkan langsung ke pengguna
+    (bukan traceback teknis), dipakai oleh read_uploaded_excel()."""
+
+
 # ---------------------------------------------------------------- util waktu
 def to_minutes(value) -> float | None:
     """Mengubah '08:30', datetime.time, atau Timestamp menjadi menit sejak 00:00."""
@@ -237,8 +242,31 @@ def read_uploaded_excel(file_bytes: bytes) -> dict[str, pd.DataFrame]:
     Nama sheet dicocokkan tanpa memandang huruf besar/kecil terhadap
     Customers / Vehicle / Depot / Parameters, sehingga pengguna lain dengan
     file serupa (nama sheet sedikit berbeda kapitalisasinya) tetap terbaca.
+
+    Melempar FileUploadError (bukan error pandas/openpyxl mentah) untuk tiga kasus umum
+    salah unggah, supaya app.py bisa menampilkan pesan yang jelas ke pengguna non-teknis:
+      1. file 0 byte (kosong total)
+      2. file bukan format Excel yang valid/rusak (mis. PDF/CSV yang di-rename jadi .xlsx,
+         file .xls lama, atau workbook yang terkunci password)
+      3. file adalah Excel yang valid tapi tidak ada satu pun sheet yang cocok dengan
+         Customers/Vehicle/Depot/Parameters (mis. workbook kosong atau salah template)
     """
-    sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+    if not file_bytes:
+        raise FileUploadError(
+            "File yang diunggah kosong (0 byte). Pastikan filenya benar-benar berisi data.")
+
+    try:
+        sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+    except Exception as e:  # noqa: BLE001  (semua error pandas/openpyxl dianggap format tak valid)
+        raise FileUploadError(
+            "File tidak bisa dibaca sebagai Excel (.xlsx). Kemungkinan penyebab: file rusak, "
+            "sebenarnya berformat lain (mis. PDF/CSV yang namanya diubah jadi .xlsx), format "
+            "Excel lama (.xls), atau workbook terkunci password. Coba buka & simpan ulang "
+            f"sebagai .xlsx dari template yang disediakan. (Detail teknis: {e})") from e
+
+    if not sheets:
+        raise FileUploadError("File Excel ini tidak memiliki sheet sama sekali (workbook kosong).")
+
     nama_map = {s.lower(): s for s in sheets}
     hasil = {}
     for target, alias in (("Customers", ["customers", "customer", "pelanggan"]),
@@ -247,6 +275,13 @@ def read_uploaded_excel(file_bytes: bytes) -> dict[str, pd.DataFrame]:
                           ("Parameters", ["parameters", "parameter", "params"])):
         kunci = next((nama_map[a] for a in alias if a in nama_map), None)
         hasil[target] = sheets[kunci].copy() if kunci else pd.DataFrame()
+
+    if all(df.empty for df in hasil.values()):
+        ditemukan = ", ".join(sheets.keys()) or "(tidak ada)"
+        raise FileUploadError(
+            "Tidak ada satu pun sheet yang cocok dengan Customers/Vehicle/Depot/Parameters "
+            f"(boleh beda kapitalisasi, tapi bukan nama lain). Sheet yang ditemukan di file "
+            f"ini: {ditemukan}. Gunakan template yang disediakan lalu isi datanya.")
     return hasil
 
 

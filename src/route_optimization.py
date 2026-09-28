@@ -25,6 +25,7 @@ from itertools import count
 
 import pandas as pd
 
+from . import road_routing as rr
 from .data_processing import to_hhmm
 
 EARTH_R = 6371.0
@@ -79,6 +80,41 @@ def build_distance_matrix(nodes: pd.DataFrame, detour_factor: float = 1.32) -> p
             km = round(haversine_km(lat[i], lon[i], lat[j], lon[j]) * detour_factor, 3)
             mat[i][j] = mat[j][i] = km
     return pd.DataFrame(mat, index=ids, columns=ids)
+
+
+def build_distance_matrix_jalan(nodes: pd.DataFrame, detour_factor: float = 1.32,
+                                use_online: bool = True) -> tuple[pd.DataFrame, str]:
+    """Sama seperti build_distance_matrix(), tapi jarak antar titik mengikuti jalan
+    sungguhan (OSRM Table Service) alih-alih garis lurus. SATU permintaan untuk
+    seluruh matriks, dipakai ulang oleh semua kandidat algoritma di optimize_from_data().
+
+    Mengembalikan (matriks, sumber) -- sumber ditampilkan ke pengguna di app.py supaya
+    jelas apakah angkanya benar-benar dari OSRM atau jatuh ke estimasi garis lurus.
+    """
+    ids = nodes.node_id.tolist()
+    lat = nodes.latitude.tolist()
+    lon = nodes.longitude.tolist()
+    jarak_km, sumber = rr.matriks_jalan(lat, lon, detour_factor, use_online)
+    return pd.DataFrame(jarak_km, index=ids, columns=ids), sumber
+
+
+def polyline_rute_terpilih(routes: list[dict], nodes: pd.DataFrame,
+                           use_online: bool = True) -> dict[str, dict]:
+    """Untuk tiap rute TERPILIH (bukan semua kandidat), ambil polyline mengikuti jalan
+    sungguhan lewat OSRM Route Service -- satu permintaan per rute. Dipanggil sekali
+    setelah solver selesai, hasilnya di-cache di session_state oleh app.py supaya
+    tidak memanggil OSRM ulang setiap kali halaman Streamlit di-render ulang.
+
+    Mengembalikan {route_id: {"geometry": [[lon, lat], ...], "sumber": str}}.
+    """
+    koord = nodes.set_index("node_id")[["latitude", "longitude"]].to_dict("index")
+    hasil = {}
+    for r in routes:
+        urutan_id = [r["depot_id"]] + list(r["urutan"]) + [r["depot_id"]]
+        latlon = [(koord[n]["latitude"], koord[n]["longitude"]) for n in urutan_id]
+        geometry, sumber = rr.polyline_rute(latlon, use_online)
+        hasil[r["route_id"]] = {"geometry": geometry, "sumber": sumber}
+    return hasil
 
 
 # ------------------------------------------------------------ Clarke-Wright
@@ -256,11 +292,15 @@ def _simulasi_rute(seq, kendaraan, depot, dist, nodes_idx, params):
         "waktu_tunggu_menit": round(total_tunggu, 1),
         "keterlambatan_menit": round(total_telat, 1),
         "konsumsi_bbm_liter": round(liter, 2),
+        # BUG LAMA: biaya_bbm_idr dihitung tapi tidak pernah dijumlahkan ke total_biaya_idr,
+        # sehingga slider "Harga BBM (Rp/liter)" di sidebar terlihat bisa digeser tapi tidak
+        # benar-benar mengubah total biaya / biaya per km yang ditampilkan di KPI. Diperbaiki
+        # dengan mengikutsertakan biaya_bbm_idr sebagai komponen ke-4 dari total_biaya_idr.
         "biaya_bbm_idr": round(liter * harga_bbm),
         "biaya_variabel_idr": round(biaya_variabel),
         "biaya_tetap_idr": round(biaya_tetap),
         "biaya_penalti_idr": round(biaya_penalti),
-        "total_biaya_idr": round(biaya_variabel + biaya_tetap + biaya_penalti),
+        "total_biaya_idr": round(biaya_variabel + biaya_tetap + biaya_penalti + liter * harga_bbm),
         "emisi_co2_kg": round(liter * emisi_per_liter, 2),
         "selesai_pukul": to_hhmm(waktu),
         "urutan": seq,
@@ -345,7 +385,13 @@ def optimize_from_data(data: dict, kandidat: list[dict] | None = None) -> dict:
         raise ValueError("Masih ada node tanpa koordinat. Jalankan 'python src/geocoding.py' "
                          "atau isi kolom latitude/longitude secara manual.")
 
-    dist = build_distance_matrix(nodes, float(params.get("detour_factor", 1.32)))
+    if params.get("pakai_rute_jalan_asli", False):
+        dist, sumber_jarak = build_distance_matrix_jalan(
+            nodes, float(params.get("detour_factor", 1.32)),
+            bool(params.get("rute_online", True)))
+    else:
+        dist = build_distance_matrix(nodes, float(params.get("detour_factor", 1.32)))
+        sumber_jarak = "Estimasi (garis lurus x faktor jarak jalan)"
     nodes_idx = nodes.set_index("node_id").to_dict("index")
 
     if kandidat is None:
@@ -396,6 +442,7 @@ def optimize_from_data(data: dict, kandidat: list[dict] | None = None) -> dict:
 
     return {
         "candidate_summary": ringkasan,
+        "sumber_jarak": sumber_jarak,
         "best_candidate": terbaik["nama"],
         "routes": terbaik["routes"],
         "route_tables": terbaik["route_tables"],

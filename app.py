@@ -16,21 +16,29 @@ import io
 from pathlib import Path
 
 import pandas as pd
+import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-from src.data_processing import (contoh_kosong, load_data, load_data_from_frames,
-                                 read_uploaded_excel, summary_table, validate_data)
+from src.data_processing import (FileUploadError, contoh_kosong, load_data,
+                                 load_data_from_frames, read_uploaded_excel,
+                                 summary_table, validate_data)
 from src.geocoding import geocode_missing
 from src.kpi_analysis import hitung_kpi, tabel_kpi, tabel_per_kendaraan, temuan_otomatis
-from src.route_optimization import optimize_from_data
+from src.route_optimization import optimize_from_data, polyline_rute_terpilih
 from src import ai_assistant as ai
 
 DATA_CONTOH = Path("data/Data_Operasional_Rute.xlsx")
 WARNA = [[15, 118, 110], [200, 134, 43], [37, 84, 160], [176, 74, 58], [110, 70, 140],
          [88, 120, 60], [214, 90, 120], [90, 96, 110]]
+WARNA_TAHAP = {"Sebelum": "#93C5FD", "Sesudah": "#1D4ED8"}  # biru muda, biru tua
 
-st.set_page_config(page_title="Optimasi Rute Distribusi", page_icon="🚚", layout="wide")
+# Citra satelit gratis tanpa API key (Esri World Imagery). Dipakai sebagai layer
+# TileLayer paling bawah di peta bila pengguna menyalakan toggle "Latar satelit".
+URL_SATELIT = ("https://server.arcgisonline.com/ArcGIS/rest/services/"
+              "World_Imagery/MapServer/tile/{z}/{y}/{x}")
+
+st.set_page_config(page_title="Rute Pintar — Optimasi Rute Distribusi", page_icon="🧭", layout="wide")
 
 
 def muat_css() -> None:
@@ -51,35 +59,27 @@ def _frame_kosong(nama: str) -> pd.DataFrame:
 
 
 def init_state():
+    """Aplikasi selalu dimulai tanpa data. Pengguna mengisi manual, mengunggah file,
+    atau (opsional) memuat data contoh lewat tombol di tab Data & Input."""
     if "customers" in st.session_state:
         return
     template = contoh_kosong()
-    if DATA_CONTOH.exists():
-        try:
-            d = load_data(DATA_CONTOH)
-            st.session_state.customers = d["customers"]
-            st.session_state.vehicles = d["vehicles"]
-            st.session_state.depots = d["depots"]
-            st.session_state.params = d["params"]
-            st.session_state.sumber_data = f"Data contoh ({DATA_CONTOH.name})"
-            return
-        except Exception:
-            pass
     st.session_state.customers = template["Customers"]
     st.session_state.vehicles = template["Vehicle"]
     st.session_state.depots = template["Depot"]
     st.session_state.params = {}
-    st.session_state.sumber_data = "Template kosong"
+    st.session_state.sumber_data = "Belum ada data — silakan isi atau unggah"
 
 
 init_state()
 st.session_state.setdefault("result", None)
 st.session_state.setdefault("kpi", None)
+st.session_state.setdefault("polylines", None)
+st.session_state.setdefault("tampilkan_satelit", False)
 st.session_state.setdefault("editor_ver", 0)
 st.session_state.setdefault("file_diproses", None)
 st.session_state.setdefault("info_unggah", None)
 st.session_state.setdefault("info_geo", None)
-st.session_state.setdefault("analisis_ai", None)
 st.session_state.setdefault("chat_riwayat", [])
 st.session_state.setdefault("saran_data", None)
 for _k in ("tutor_penjelasan", "tutor_topik", "tutor_soal", "tutor_nilai"):
@@ -87,9 +87,18 @@ for _k in ("tutor_penjelasan", "tutor_topik", "tutor_soal", "tutor_nilai"):
 
 
 def data_sekarang() -> dict:
-    return load_data_from_frames(
+    """Membangun ulang data dari tabel + PARAMETER YANG SEDANG DIATUR DI SIDEBAR.
+
+    Sebelumnya fungsi ini memanggil load_data_from_frames() tanpa params_df, sehingga
+    params selalu kembali ke nilai bawaan (DEFAULT_PARAMS) dan slider di sidebar
+    (faktor jarak, faktor lalu lintas, harga BBM, penalti keterlambatan) tidak
+    benar-benar mempengaruhi hasil optimasi walau terlihat bisa digeser.
+    """
+    data = load_data_from_frames(
         st.session_state.customers, st.session_state.vehicles,
         st.session_state.depots, source_label=st.session_state.sumber_data)
+    data["params"] = {**data["params"], **st.session_state.get("params", {})}
+    return data
 
 
 def segarkan_editor():
@@ -130,18 +139,28 @@ def template_excel_bytes() -> bytes:
     return buf.getvalue()
 
 
-def buat_layer_peta(result, nodes):
+def buat_layer_peta(result, nodes, polylines=None, tampilkan_satelit=False):
+    layers = []
+    if tampilkan_satelit:
+        layers.append(pdk.Layer("TileLayer", data=URL_SATELIT,
+                                min_zoom=0, max_zoom=19, tile_size=256))
+
     titik = nodes.copy()
     titik["radius"] = titik.node_type.map({"DEPOT": 320, "CUSTOMER": 170})
     titik["warna"] = titik.node_type.map({"DEPOT": [27, 36, 48], "CUSTOMER": [120, 130, 145]})
-    layers = [pdk.Layer(
+    layers.append(pdk.Layer(
         "ScatterplotLayer", data=titik, get_position=["longitude", "latitude"],
-        get_radius="radius", get_fill_color="warna", pickable=True, opacity=0.85)]
+        get_radius="radius", get_fill_color="warna", pickable=True, opacity=0.85))
 
     koord = nodes.set_index("node_id")[["latitude", "longitude"]].to_dict("index")
     garis = []
     for i, (rid, tabel) in enumerate(result["route_tables"].items()):
-        path = [[koord[n]["longitude"], koord[n]["latitude"]] for n in tabel.node_id]
+        # bila polyline OSRM tersedia untuk rute ini, ikuti jalan sungguhan; bila tidak
+        # (OSRM belum dihitung / gagal), tetap jatuh ke garis lurus antar stop (perilaku lama)
+        if polylines and rid in polylines:
+            path = polylines[rid]["geometry"]
+        else:
+            path = [[koord[n]["longitude"], koord[n]["latitude"]] for n in tabel.node_id]
         garis.append({"route_id": rid, "path": path, "warna": warna(i),
                       "vehicle_id": tabel.vehicle_id.iloc[0]})
     if garis:
@@ -150,47 +169,102 @@ def buat_layer_peta(result, nodes):
     return layers
 
 
+def render_perbandingan_chart(h: dict, key_prefix: str = "") -> None:
+    """Grafik batang Jarak (km) & Biaya (Rp): sebelum vs sesudah, berdampingan.
+
+    key_prefix wajib diisi berbeda tiap kali fungsi ini dipanggil di halaman yang sama
+    (mis. "rute", "kpi"), supaya masing-masing st.plotly_chart punya ID unik dan tidak
+    bentrok dengan StreamlitDuplicateElementId saat fungsi ini dipanggil lebih dari
+    sekali dengan data yang identik.
+    """
+    col_jarak, col_biaya = st.columns(2)
+    with col_jarak:
+        st.markdown("**Jarak (km)**")
+        df_jarak = pd.DataFrame({
+            "Tahap": ["Sebelum", "Sesudah"],
+            "Nilai": [h["jarak_baseline_km"], h["jarak_optimal_km"]],
+        })
+        fig = px.bar(df_jarak, x="Tahap", y="Nilai", color="Tahap",
+                     color_discrete_map=WARNA_TAHAP, text_auto=".2f")
+        fig.update_layout(showlegend=False, yaxis_title="km", xaxis_title="")
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_chart_jarak")
+    with col_biaya:
+        st.markdown("**Biaya (Rp)**")
+        df_biaya = pd.DataFrame({
+            "Tahap": ["Sebelum", "Sesudah"],
+            "Nilai": [h["biaya_baseline_idr"], h["biaya_optimal_idr"]],
+        })
+        fig = px.bar(df_biaya, x="Tahap", y="Nilai", color="Tahap",
+                     color_discrete_map=WARNA_TAHAP, text_auto=",.0f")
+        fig.update_layout(showlegend=False, yaxis_title="Rp", xaxis_title="")
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_chart_biaya")
+
+
 # ==================================================================
 # SIDEBAR - PARAMETER
 # ==================================================================
 st.sidebar.title("🚚 Optimasi Rute")
-st.sidebar.caption("Perencanaan rute distribusi tanpa Google Maps API — bisa dipakai untuk kasus apa pun.")
 st.sidebar.info(f"Sumber data saat ini: **{st.session_state.sumber_data}**")
 
 st.sidebar.subheader("Parameter")
 p = st.session_state.params or {}
 p["detour_factor"] = st.sidebar.slider(
     "Faktor jarak jalan", 1.0, 2.0, float(p.get("detour_factor", 1.32)), 0.01,
-    help="Pengali jarak garis lurus menjadi perkiraan jarak jalan sebenarnya.")
+    help="Pengali manual (bukan data GPS/peta real-time) untuk mengubah jarak garis lurus "
+         "menjadi perkiraan jarak jalan sebenarnya. Sesuaikan sendiri: 1.2-1.3 untuk kota "
+         "dengan jalan relatif lurus, 1.4-1.6 untuk area berkelok/banyak satu arah.")
 p["traffic_factor"] = st.sidebar.slider(
     "Faktor lalu lintas", 1.0, 2.5, float(p.get("traffic_factor", 1.18)), 0.01,
-    help="Pengali waktu tempuh terhadap kondisi jalan lengang.")
+    help="Pengali manual (bukan data lalu lintas real-time) untuk memperlambat waktu tempuh "
+         "dibanding kondisi jalan lengang. Naikkan untuk simulasi jam sibuk/macet, turunkan "
+         "mendekati 1.0 untuk simulasi malam hari/lengang.")
 p["harga_solar_idr_per_liter"] = st.sidebar.number_input(
     "Harga BBM (Rp/liter)", 0, 50000, int(p.get("harga_solar_idr_per_liter", 6800)), 100)
 p["penalti_keterlambatan_per_menit"] = st.sidebar.number_input(
     "Penalti keterlambatan (Rp/menit)", 0, 500000,
     int(p.get("penalti_keterlambatan_per_menit", 15000)), 1000)
+
+# Rute selalu memakai OSRM (jalan sungguhan) — pengguna tidak perlu menyalakan/mematikannya,
+# hanya memilih sumber datanya: online (internet) atau cache lokal saja.
+p["pakai_rute_jalan_asli"] = True
+st.sidebar.subheader("🛣️ Rute jalan asli (OSRM)")
+p["rute_online"] = st.sidebar.checkbox(
+    "Ambil dari internet (matikan untuk pakai cache lokal saja)",
+    value=bool(p.get("rute_online", True)), key="rute_online_cb",
+    help="Rute selalu mengikuti jalan sungguhan (OSRM). Nyalakan untuk mengambil data "
+         "rute terbaru dari internet; matikan untuk memakai cache lokal saja — berguna "
+         "saat tidak ada koneksi internet.")
+st.sidebar.caption("Bila OSRM tidak terjangkau, aplikasi otomatis jatuh ke estimasi garis "
+                   "lurus supaya tetap bisa jalan.")
+
+st.session_state.tampilkan_satelit = st.sidebar.checkbox(
+    "🛰️ Latar peta citra satelit", value=st.session_state.tampilkan_satelit,
+    help="Esri World Imagery — gratis, tanpa API key. Ditampilkan di tab Peta.")
 st.session_state.params = p
 
-st.sidebar.subheader("🤖 Gemini AI")
+# Key dari Streamlit Secrets (bila belum ada di environment)
+try:
+    if not ai.api_key_tersedia():
+        for _nama in ("AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            if _nama in st.secrets:
+                ai.atur_kunci_sesi(str(st.secrets[_nama]))
+                break
+except Exception:  # noqa: BLE001  (tidak ada file secrets saat dijalankan lokal)
+    pass
+if st.session_state.get("kunci_sesi"):
+    ai.atur_kunci_sesi(st.session_state["kunci_sesi"])
+
+st.sidebar.subheader("🤖 Asisten AI")
 if ai.api_key_tersedia():
-    st.sidebar.success(f"Gemini siap · model `{ai.MODEL}`")
+    st.sidebar.success("AI siap digunakan")
 else:
-    st.sidebar.warning("API key belum ditemukan. Isi `GEMINI_API_KEY` di file `.env` "
-                       "atau tempel di bawah (hanya berlaku untuk sesi ini).")
-    _kunci = st.sidebar.text_input("GEMINI_API_KEY", type="password")
-    if _kunci:
-        ai.set_api_key(_kunci)
-        st.rerun()
+    st.sidebar.warning("Fitur AI belum aktif untuk sesi ini.")
 
 st.markdown(
     '<div class="hero">'
     '<div class="eyebrow">Logistics Intelligence</div>'
-    '<h1>Optimasi Rute Distribusi</h1>'
-    '<p>Perencanaan rute multi-depot dengan kendala kapasitas, time window, dan jam kerja armada. '
-    'Dilengkapi analisis hasil, tanya jawab, dan tutor algoritma berbasis Gemini AI.</p>'
-    '<div class="chips"><span>Clarke-Wright Savings</span><span>2-opt</span>'
-    '<span>Time Window</span><span>Multi-depot</span><span>Gemini AI</span></div>'
+    '<h1>RutePintar</h1>'
+    '<p>Rencanakan rute pengiriman Anda secara otomatis — lebih hemat, lebih cepat, dan tepat waktu.</p>'
     '</div>', unsafe_allow_html=True)
 
 tab_data, tab_peta, tab_rute, tab_kpi, tab_ai, tab_tutor, tab_ekspor = st.tabs(
@@ -241,7 +315,11 @@ with tab_data:
                         st.session_state.info_unggah += "\n\n" + "\n\n".join("• " + c for c in peta_kolom)
                     segarkan_editor()
                     st.rerun()
-                except Exception as e:  # noqa: BLE001
+                except FileUploadError as e:
+                    st.session_state.file_diproses = None
+                    st.error(f"⚠️ File tidak sesuai: {e}")
+                except Exception as e:  # noqa: BLE001  (error tak terduga lain)
+                    st.session_state.file_diproses = None
                     st.error(f"Gagal membaca file: {e}. Pastikan strukturnya mengikuti template.")
             elif st.session_state.info_unggah:
                 st.success(st.session_state.info_unggah)
@@ -356,7 +434,7 @@ with tab_data:
         for e in errors:
             st.write("- ", e)
         if st.button("🤖 Minta AI menjelaskan & memperbaiki", key="ai_fix_data"):
-            with st.spinner("Gemini menganalisis masalah data..."):
+            with st.spinner("AI menganalisis masalah data..."):
                 try:
                     st.session_state.saran_data = ai.bantu_perbaiki_data(errors, warnings_, data)
                 except ai.AIError as err:
@@ -376,8 +454,13 @@ with tab_data:
             with st.spinner("Menghitung rute..."):
                 st.session_state.result = optimize_from_data(data)
                 st.session_state.kpi = hitung_kpi(st.session_state.result, data)
-                st.session_state.analisis_ai = None
                 st.session_state.chat_riwayat = []
+                st.session_state.polylines = None
+                if p.get("pakai_rute_jalan_asli", False):
+                    with st.spinner("Mengambil bentuk rute mengikuti jalan dari OSRM..."):
+                        st.session_state.polylines = polyline_rute_terpilih(
+                            st.session_state.result["routes"], st.session_state.result["nodes"],
+                            use_online=bool(p.get("rute_online", True)))
             st.success("Optimasi selesai. Buka tab Peta, Rute, atau KPI untuk melihat hasilnya.")
 
 result = st.session_state.result
@@ -390,19 +473,33 @@ if result is None:
                    "tombol **🚀 Jalankan Optimasi**.")
 else:
     data = data_sekarang()
+    h = result["penghematan"]
 
     # ---------------------------------------------------------------- peta
     with tab_peta:
         nodes = result["nodes"]
+        polylines = st.session_state.polylines
         st.pydeck_chart(pdk.Deck(
             map_style=None,
             initial_view_state=pdk.ViewState(
                 latitude=float(p.get("pusat_peta_lat", nodes.latitude.mean())),
                 longitude=float(p.get("pusat_peta_lon", nodes.longitude.mean())),
                 zoom=10.5, pitch=0),
-            layers=buat_layer_peta(result, nodes),
+            layers=buat_layer_peta(result, nodes, polylines, st.session_state.tampilkan_satelit),
             tooltip={"text": "{node_name}{route_id} {vehicle_id}"}))
         st.caption("Titik gelap = depot, titik abu-abu = pelanggan, garis berwarna = rute kendaraan.")
+
+        sumber_jarak = result.get("sumber_jarak", "Estimasi (garis lurus x faktor jarak jalan)")
+        if sumber_jarak.startswith("OSRM"):
+            st.caption(f"📍 Jarak & bentuk rute mengikuti jalan sungguhan (sumber: {sumber_jarak}).")
+        else:
+            st.caption(f"📍 Sumber jarak saat ini: {sumber_jarak}.")
+        if p.get("pakai_rute_jalan_asli", False) and polylines:
+            sumber_polyline = {v["sumber"] for v in polylines.values()}
+            if any(s.startswith("Fallback") for s in sumber_polyline):
+                st.warning("Sebagian bentuk rute di peta jatuh ke garis lurus (OSRM tidak "
+                          "terjangkau untuk rute tersebut saat itu). Jalankan ulang optimasi "
+                          "saat koneksi lebih stabil bila perlu bentuk jalan yang akurat.")
 
         legenda = pd.DataFrame([
             {"Rute": r["route_id"], "Kendaraan": r["vehicle_id"], "Depot": r["depot_id"],
@@ -414,16 +511,34 @@ else:
     with tab_rute:
         st.subheader("Perbandingan kandidat solusi")
         st.dataframe(result["candidate_summary"], hide_index=True, use_container_width=True)
-        st.info(f"Kandidat terpilih: **{result['best_candidate']}**")
 
-        h = result["penghematan"]
+        st.success(
+            f"✅ **Keputusan rute terbaik: kandidat '{result['best_candidate']}'.** "
+            f"Dipilih karena skor objektifnya (total biaya + penalti pelanggan tak terlayani) "
+            f"paling rendah di antara semua kandidat yang diuji. Dibandingkan solusi awal "
+            f"sebelum perbaikan lokal (baris **Savings murni** di tabel di atas — "
+            f"ini yang dipakai sebagai pembanding **'sebelum'**), rute ini (**'sesudah'**) "
+            f"lebih hemat **{h['hemat_km']:.2f} km ({h['hemat_jarak_persen']:.1f}%)** jarak dan "
+            f"**Rp {h['hemat_biaya_idr']:,.0f}** biaya.")
+
+        st.markdown("**Perbandingan sebelum vs sesudah optimasi**")
         k1, k2, k3 = st.columns(3)
-        k1.metric("Jarak optimal", f"{h['jarak_optimal_km']:,.2f} km",
+        k1.metric("Jarak — sebelum → sesudah",
+                  f"{h['jarak_optimal_km']:,.2f} km",
                   f"{-h['hemat_km']:+,.2f} km ({-h['hemat_jarak_persen']:+.1f}%)",
-                  delta_color="inverse", help="Dibandingkan solusi awal Clarke-Wright tanpa perbaikan.")
-        k2.metric("Biaya optimal", f"Rp {h['biaya_optimal_idr']:,.0f}",
-                  f"{-h['hemat_biaya_idr']:+,.0f}", delta_color="inverse")
+                  delta_color="inverse",
+                  help=f"Sebelum (Savings murni): {h['jarak_baseline_km']:,.2f} km. "
+                       f"Sesudah ({result['best_candidate']}): {h['jarak_optimal_km']:,.2f} km.")
+        k2.metric("Biaya — sebelum → sesudah",
+                  f"Rp {h['biaya_optimal_idr']:,.0f}",
+                  f"{-h['hemat_biaya_idr']:+,.0f}", delta_color="inverse",
+                  help=f"Sebelum: Rp {h['biaya_baseline_idr']:,.0f}. "
+                       f"Sesudah: Rp {h['biaya_optimal_idr']:,.0f}.")
         k3.metric("Rute terbentuk", f"{len(result['routes'])}")
+
+        with st.expander("Lihat perbandingan jarak & biaya sebelum vs sesudah sebagai grafik",
+                          expanded=True):
+            render_perbandingan_chart(h, key_prefix="rute")
 
         if result["unserved"]:
             st.warning(f"Belum terlayani: {', '.join(result['unserved'])}")
@@ -459,19 +574,12 @@ else:
             st.subheader("Temuan")
             for t in temuan_otomatis(kpi, result, data):
                 st.write("- ", t)
-            st.caption("Temuan di atas berbasis aturan (tanpa AI). Untuk analisis Gemini:")
-            if ai.api_key_tersedia() and st.button("🤖 Analisis KPI dengan Gemini", key="ai_kpi"):
-                with st.spinner("Gemini menyusun analisis..."):
-                    try:
-                        st.session_state.analisis_ai = ai.analisis_hasil(result, kpi, data)
-                    except ai.AIError as err:
-                        st.error(str(err))
-            if st.session_state.analisis_ai:
-                with st.expander("Hasil analisis Gemini", expanded=True):
-                    st.markdown(st.session_state.analisis_ai)
             st.subheader("Jarak per rute")
             st.bar_chart(tabel_per_kendaraan(result).set_index("route_id")[["total_jarak_km"]],
                          color="#0F766E")
+
+        st.subheader("Perbandingan sebelum vs sesudah optimasi")
+        render_perbandingan_chart(h, key_prefix="kpi")
 
         st.subheader("Ringkasan per kendaraan")
         st.dataframe(tabel_per_kendaraan(result), hide_index=True, use_container_width=True)
@@ -479,22 +587,8 @@ else:
     # ------------------------------------------------------------- asisten AI
     with tab_ai:
         if not ai.api_key_tersedia():
-            st.warning("Isi GEMINI_API_KEY di file .env atau di sidebar untuk memakai fitur ini.")
+            st.warning("Fitur AI belum aktif untuk sesi ini.")
         else:
-            st.subheader("Analisis hasil oleh Gemini")
-            st.caption("Angka tetap dihitung solver. Gemini hanya membaca KPI, jadwal, dan "
-                       "pelanggan bermasalah, lalu menyusun analisis dan rekomendasi. "
-                       "Alamat pelanggan tidak dikirim.")
-            if st.button("✨ Buat analisis AI", type="primary"):
-                with st.spinner("Gemini menyusun analisis..."):
-                    try:
-                        st.session_state.analisis_ai = ai.analisis_hasil(result, kpi, data)
-                    except ai.AIError as err:
-                        st.error(str(err))
-            if st.session_state.analisis_ai:
-                st.markdown(st.session_state.analisis_ai)
-
-            st.divider()
             st.subheader("Tanya jawab tentang rute Anda")
             st.caption("Contoh: “Kenapa RT-02 terlambat?”, “Rute mana yang paling boros?”, "
                        "“Apa yang terjadi kalau jam berangkat dimajukan?”")
@@ -503,7 +597,7 @@ else:
                     st.markdown(m["content"])
             if tanya := st.chat_input("Tanyakan sesuatu tentang hasil optimasi..."):
                 st.session_state.chat_riwayat.append({"role": "user", "content": tanya})
-                with st.spinner("Gemini berpikir..."):
+                with st.spinner("AI berpikir..."):
                     try:
                         jawab = ai.tanya_rute(tanya, st.session_state.chat_riwayat[:-1],
                                               ai.bangun_konteks(result, kpi, data))
@@ -538,18 +632,18 @@ else:
 # TAB TUTOR ALGORITMA — AI sebagai media belajar
 # ==================================================================
 with tab_tutor:
-    st.subheader("🎓 Tutor Algoritma (Gemini)")
-    st.caption("Pilih konsep. Gemini menjelaskan memakai kode asli di `src/route_optimization.py` "
+    st.subheader("🎓 Tutor Algoritma")
+    st.caption("Pilih konsep. AI menjelaskan memakai kode asli di `src/route_optimization.py` "
                "dan, bila optimasi sudah dijalankan, angka dari hasil Anda sendiri.")
     if not ai.api_key_tersedia():
-        st.warning("Isi GEMINI_API_KEY di file .env atau di sidebar untuk memakai fitur ini.")
+        st.warning("Fitur AI belum aktif untuk sesi ini.")
     else:
         c1, c2 = st.columns([2, 1])
         topik = c1.selectbox("Konsep", list(ai.KONSEP))
         level = c2.selectbox("Level", ["Pemula", "Menengah", "Lanjut"])
 
         if st.button("📖 Jelaskan", key="btn_tutor"):
-            with st.spinner("Gemini menyiapkan penjelasan..."):
+            with st.spinner("AI menyiapkan penjelasan..."):
                 try:
                     konteks = (ai.bangun_konteks(result, kpi, data_sekarang())
                                if result is not None else None)
@@ -567,7 +661,7 @@ with tab_tutor:
             st.divider()
             st.markdown("**Uji pemahaman**")
             if st.button("📝 Buat pertanyaan latihan", key="btn_soal"):
-                with st.spinner("Gemini membuat pertanyaan..."):
+                with st.spinner("AI membuat pertanyaan..."):
                     try:
                         st.session_state.tutor_soal = ai.buat_pertanyaan_latihan(
                             st.session_state.tutor_topik, level)
@@ -578,7 +672,7 @@ with tab_tutor:
                 st.info(st.session_state.tutor_soal)
                 jawaban = st.text_area("Jawaban Anda", key="tutor_jawaban")
                 if st.button("✅ Nilai jawaban saya", key="btn_nilai") and jawaban.strip():
-                    with st.spinner("Gemini menilai..."):
+                    with st.spinner("AI menilai..."):
                         try:
                             st.session_state.tutor_nilai = ai.nilai_jawaban(
                                 st.session_state.tutor_topik, st.session_state.tutor_soal, jawaban)
